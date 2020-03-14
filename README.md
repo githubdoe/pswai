@@ -1,5 +1,5 @@
 # pswai
-PSWAI: A "Plate Solved Where Am I" application for astronomy
+PSWAI: A "Plate Solved Where Am I" application for astronomy  Forked version to specialize for my needs talking to SkySafari as a servo Cat telescope.  
 
 ## What it does
 Takes images of the night sky with a camera, plate solves them for location and hooks it up
