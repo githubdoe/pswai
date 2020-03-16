@@ -1,0 +1,200 @@
+#!/bin/bash
+#
+# PSWAI: A Plate Solved Where Am I  application
+# Copyright (C) 2018 arhcf (user arhcf at github 2018)
+# This file is part of the pswai project. Modified and forked by Dale Eason
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# 
+#
+#
+# takes a pic using pic.py, downloads it using lftp and solves it using
+# plate solver
+#
+# Needs pic.py lftp and plate solver like 
+# astrometry.net's solve-field installed
+# depends on astrometry.net, FFMPEG and imagemagick
+
+# it helps to solve an image manually calling solve-field first with plots enabled to get pixel width.
+arcsecperpixel=20
+
+parms=' --cpulimit 10 -9 -8 neg -N none' 
+limits=' -u app  -L '$(($arcsecperpixel-1))' -H '$(($arcsecperpixel+1))
+plots=' --no-plots'
+sigma=' --sigma 9 '
+top=`dirname $0`
+top=`cd $top; pwd -P`
+pwd
+rundir=/media/pi/ASTRO/tmp
+mkdir -p $rundir
+
+echo $@
+
+infile="sky.jpg"
+
+# if your camera has a field of more than 10 deg it can help speed up the solve to crop the image
+# for the yi camera with a 36 mm lens croping by 500 pixels is a good compromise
+cropwidth=500
+cropheight=400
+
+snapimage=1         # 1 = use camera for image
+keepImages=0
+while getopts ":hf:c:p:a:ns:h" opt; do
+  case ${opt} in
+    h)
+        echo usage:
+        echo "  -f image file to solve if not using the camera. Don't use if using the camera."
+        echo "  -c 'width height'   (border width border height to crop away)"
+        echo "  -p  'params to solve-field'"
+        echo "  -a  'append parameters'   params to append to solve-field"
+        echo "  -n  remove --no-plots from parm;"
+        echo "  -s  sigma  use this sigma value"
+        echo "  -h  keep image file"
+        echo ""
+        echo "default solve-filed parameters ""$parms$limits$plots$sigma"
+        exit 0
+        ;;
+
+    f )
+        infile=$OPTARG
+        snapimage=0
+        keepImage=1
+        echo infile="$infile"
+      ;;
+
+    c )  #crop input width and height
+        echo trying width
+        str=$OPTARG
+        cropwidth=${str% *}
+        cropheight=${str#* }
+        echo "cropw x croph = " "$cropwidth" "$cropheight"
+        ;;
+    h )  #keep iamges files
+        keepImages=1
+        ;;
+    p )  #set parameters
+        parms=$OPTARG
+        echo parms "$parms"
+        ;;
+    s ) #override sigma 10
+        sigma=" --sigma "$OPTARG
+        ;;
+    a ) #append to parameters
+        parms="$parms"" $OPTARG"
+        echo parms "$parms"
+        ;;
+    n ) #remove --no-plots to parms
+        plots=" "
+        ;;
+    \? )
+      echo "Invalid Option: -$OPTARG" 1>&2
+      exit 1
+      ;;
+  esac
+done
+parms=$limits$parms$plots$sigma
+echo parms= $parms
+
+file=$( echo ${infile##*/} )
+
+
+infile=$rundir/$file
+echo file "$infile" "$#"
+
+if (($# > 0)); then
+	parm=$@	
+fi
+
+/usr/bin/pkill solve-field
+
+cd $rundir
+echo "using dir " $rundir
+
+opd=$rundir
+
+#image capture using Yi action camera
+if [ $snapimage = 1 ]; then
+    rm -f "sky.jpg"
+    today=`date '+%Y_%m_%d__%H_%M_%S'`
+    filename="$today.jpg"
+    echo timestampfile "$filename"
+
+    #capture using Canon EOS with attached with usb
+    #/usr/bin/pkill gphoto2-vo
+    #gphoto2 --auto-detect
+    #gphoto2 --capture-image-and-download --filename  $filename 
+    #retv=$?
+
+    #if [ $retv -eq 0 ] 
+	#then
+	    #echo "processing image"
+  	    #echo "$outp" | grep "Saving"
+        #infile=$filename
+    #else
+	    #exit 1
+    #fi
+        echo trying to get camera image using pic.py
+        fimage=$(python ~/solver/pic.py)
+        echo "file to get is" "$fimage"
+        lftp -e "set xfer:clobber true; get $fimage  -o $rundir/$filename  ; quit" -u root, 192.168.42.1
+        infile="$filename"
+        #infile="/media/pi/ASTRO/tmp/2020_03_07__20_30_42.jpg"  #for testing indoors give it an image file.
+        echo file saved as "$filename"
+fi
+
+
+
+if [ "$cropwidth" -gt 0 ]; then
+    echo cropwidth is "$cropwidth"
+    STR=$(identify -ping -format "%w %h" "$infile")     #using imagemagic identify to find file size
+    width=${STR% *}
+    height=${STR#* }
+    totalwcrop=$( expr 2 '*' $cropwidth)
+    totalhcrop=$( expr 2 '*' $cropheight)
+    echo fw fh "$fw" "$fh"
+    ffmpeg -i "$infile" -filter:v "crop=$width-$totalwcrop :$height-$totalhcrop:$cropwidth:$cropheight" -y Sm.jpg
+    infile=Sm.jpg
+fi
+
+pdt=$(date +"%H:%M:%S")
+start=$SECONDS
+
+# Any plate solver can be used, here is an example using solve-field from astrometry.net
+/usr/local/astrometry/bin/solve-field $infile $parms --out capt.solved --overwrite 2>&1 | tee  solve.log
+end=$SECONDS
+retv=$?
+
+
+
+duration=$(( end - start ))
+echo "took $duration seconds to complete"
+if [ $keepImages = 0 ]; then
+    rm $infile
+fi
+
+if [ $retv -eq 0 ]; then
+  status=$(grep 'Did not solve' solve.log)
+echo status "$status"
+    if [ "$status" = "" ]; then
+      r1=`grep "(RA,Dec)" solve.log | awk '{print $5,$6}' | sed -e "s/(//g" -e "s/)//g" -e "s/\,//g"` 
+      r2=`grep "rotation" solve.log | awk '{print $2,$6}' | sed -e "s/(//g" -e "s/)//g" -e "s/\,//g"` 
+      #cat solve.log >> solve.hist.log
+      echo $pdt" "$r1" "$r2 > radec.txt
+      echo $pdt" "$r1" " $r2 " "$duration " secs " $inputfile $parms| tee -a radec.hist.txt
+    fi
+  exit 0
+else
+  exit 1
+fi
+  
